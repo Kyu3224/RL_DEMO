@@ -1,2 +1,2 @@
 def print_hi():
-    print("hi")
+    print("hs")
