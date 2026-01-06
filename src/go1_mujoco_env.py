@@ -57,49 +57,40 @@ class Go1MujocoEnv(MujocoEnv):
             "render_fps": 60,
         }
         self._last_render_time = -1.0
-        self._max_episode_time_sec = 15.0
+        self._max_episode_time_sec = cfg["env"]["max_episode_length_s"]
         self._step = 0
 
         # Weights for the reward and cost functions
         self.reward_weights = {
-            "linear_vel_tracking": cfg["reward"]["linear_vel_tracking"],  # Was 1.0
-            "angular_vel_tracking": 1.0,
-            "healthy": 0.0,  # was 0.05
-            "feet_airtime": 1.0,
+            k: float(v)
+            for k, v in cfg["reward"].items()
         }
         self.cost_weights = {
-            "torque": 0.0002,
-            "vertical_vel": 2.0,  # Was 1.0
-            "xy_angular_vel": 0.05,  # Was 0.05
-            "action_rate": 0.01,
-            "joint_limit": 10.0,
-            "joint_velocity": 0.01,
-            "joint_acceleration": 2.5e-7, 
-            "orientation": 1.0,
-            "collision": 1.0,
-            "default_joint_position": 0.1
+            k: float(v)
+            for k, v in cfg["cost"].items()
         }
 
-        self._curriculum_base = 0.3
+        self._curriculum_base = cfg["curriculum"]["base"]
         self._gravity_vector = np.array(self.model.opt.gravity)
         self._default_joint_position = np.array(self.model.key_ctrl[0])
 
         # vx (m/s), vy (m/s), wz (rad/s)
-        self._desired_velocity_min = np.array([0.5, -0.0, -0.0])
-        self._desired_velocity_max = np.array([0.5, 0.0, 0.0])
-        self._desired_velocity = self._sample_desired_vel()  # [0.5, 0.0, 0.0]
+        self._desired_velocity_min = np.array(cfg["command"]["des_vel"]["min"])
+        self._desired_velocity_max = np.array(cfg["command"]["des_vel"]["max"])
+        self._desired_velocity = self._sample_desired_vel()
         self._obs_scale = {
-            "linear_velocity": 2.0,
-            "angular_velocity": 0.25,
-            "dofs_position": 1.0,
-            "dofs_velocity": 0.05,
+            k: float(v)
+            for k, v in cfg["observation"].items()
         }
         self._tracking_velocity_sigma = 0.25
 
         # Metrics used to determine if the episode should be terminated
-        self._healthy_z_range = (0.22, 0.65)
-        self._healthy_pitch_range = (-np.deg2rad(10), np.deg2rad(10))
-        self._healthy_roll_range = (-np.deg2rad(10), np.deg2rad(10))
+        self._healthy_z_range = (float(cfg["z_range"][0]),
+                                 float(cfg["z_range"][1]))
+        self._healthy_pitch_range = (np.deg2rad(cfg["pitch_range"][0]),
+                                     np.deg2rad(cfg["pitch_range"][1]))
+        self._healthy_roll_range = (np.deg2rad(cfg["roll_range"][0]),
+                                    np.deg2rad(cfg["roll_range"][1]))
 
         self._feet_air_time = np.zeros(4)
         self._last_contacts = np.zeros(4)
