@@ -12,7 +12,7 @@ class RewardCalculator:
             for k, v in cfg["cost"].items()
         }
 
-        self._tracking_velocity_sigma = 0.25
+        self._tracking_velocity_sigma = cfg["command"]["tracking_velocity_sigma"]
 
         self._feet_air_time = np.zeros(4)
         self._last_contacts = np.zeros(4)
@@ -72,9 +72,9 @@ class RewardCalculator:
 
     def joint_limit(self, soft_joint_range, jpos):
         # Penalize the robot for joints exceeding the soft control range
-        out_of_range = (soft_joint_range[:, 0] - jpos[7:]).clip(
+        out_of_range = (soft_joint_range[:, 0] - jpos).clip(
             min=0.0
-        ) + (jpos[7:] - soft_joint_range[:, 1]).clip(min=0.0)
+        ) + (jpos - soft_joint_range[:, 1]).clip(min=0.0)
         return self.cost_weights["joint_limit"] * np.sum(out_of_range)
 
     def joint_acc_limit(self, qacc):

@@ -8,7 +8,10 @@ from pathlib import Path
 
 import yaml
 
+from src.utils import math_utils
+from src.utils.state import Go1State
 from src.mdp.reward import RewardCalculator
+from src.mdp.termination import TerminationChecker
 
 DEFAULT_CAMERA_CONFIG = {
     "azimuth": 90.0,
@@ -23,14 +26,6 @@ DEFAULT_CAMERA_CONFIG = {
 
 class Go1MujocoEnv(MujocoEnv):
     """Custom Environment that follows gym interface."""
-
-    metadata = {
-        "render_modes": [
-            "human",
-            "rgb_array",
-            "depth_array",
-        ],
-    }
 
     def __init__(self, prj_path, **kwargs):
         model_path = Path(f"{prj_path}/unitree_go1/scene_position.xml")
@@ -49,12 +44,7 @@ class Go1MujocoEnv(MujocoEnv):
 
         # Update metadata to include the render FPS
         self.metadata = {
-            "render_modes": [
-                "human",
-                "rgb_array",
-                "depth_array",
-            ],
-            "render_fps": 60,
+            "render_fps": cfg["render"]["render_fps"],
         }
         self._last_render_time = -1.0
         self._max_episode_time_sec = cfg["env"]["max_episode_length_s"]
@@ -62,14 +52,6 @@ class Go1MujocoEnv(MujocoEnv):
 
         # Weights for the reward and cost functions
         self.reward_calculator = RewardCalculator(cfg=cfg)
-        # self.reward_weights = {
-        #     k: float(v)
-        #     for k, v in cfg["reward"].items()
-        # }
-        # self.cost_weights = {
-        #     k: float(v)
-        #     for k, v in cfg["cost"].items()
-        # }
 
         self._curriculum_base = cfg["curriculum"]["base"]
         self._gravity_vector = np.array(self.model.opt.gravity)
@@ -83,15 +65,9 @@ class Go1MujocoEnv(MujocoEnv):
             k: float(v)
             for k, v in cfg["observation"].items()
         }
-        self._tracking_velocity_sigma = 0.25
 
         # Metrics used to determine if the episode should be terminated
-        self._healthy_z_range = (float(cfg["termination"]["z_range"][0]),
-                                 float(cfg["termination"]["z_range"][1]))
-        self._healthy_pitch_range = (np.deg2rad(cfg["termination"]["pitch_range"][0]),
-                                     np.deg2rad(cfg["termination"]["pitch_range"][1]))
-        self._healthy_roll_range = (np.deg2rad(cfg["termination"]["roll_range"][0]),
-                                    np.deg2rad(cfg["termination"]["roll_range"][1]))
+        self.termination = TerminationChecker(cfg=cfg["termination"])
 
         self._cfrc_ext_feet_indices = [4, 7, 10, 13]  # 4:FR, 7:FL, 10:RR, 13:RL
         self._cfrc_ext_contact_indices = [2, 3, 5, 6, 8, 9, 11, 12]
@@ -144,8 +120,7 @@ class Go1MujocoEnv(MujocoEnv):
         self.do_simulation(action, self.frame_skip)
 
         observation = self._get_obs()
-        reward, reward_info = self._calc_reward(action)
-        # TODO: Consider terminating if knees touch the ground
+        reward, reward_info = self._get_reward(action)
         terminated = not self.is_healthy
         truncated = self._step >= (self._max_episode_time_sec / self.dt)
         info = {
@@ -167,22 +142,12 @@ class Go1MujocoEnv(MujocoEnv):
 
     @property
     def is_healthy(self):
-        state = self.state_vector()
-        min_z, max_z = self._healthy_z_range
-        is_healthy = np.isfinite(state).all() and min_z <= state[2] <= max_z
-
-        min_roll, max_roll = self._healthy_roll_range
-        is_healthy = is_healthy and min_roll <= state[4] <= max_roll
-
-        min_pitch, max_pitch = self._healthy_pitch_range
-        is_healthy = is_healthy and min_pitch <= state[5] <= max_pitch
-
-        return is_healthy
+        return self.termination.is_healthy(self.state_vector())
 
     @property
     def projected_gravity(self):
         w, x, y, z = self.data.qpos[3:7]
-        euler_orientation = np.array(self.euler_from_quaternion(w, x, y, z))
+        euler_orientation = np.array(math_utils.euler_from_quaternion(w, x, y, z))
         projected_gravity_not_normalized = (
                 np.dot(self._gravity_vector, euler_orientation) * euler_orientation
         )
@@ -202,36 +167,37 @@ class Go1MujocoEnv(MujocoEnv):
     def curriculum_factor(self):
         return self._curriculum_base ** 0.997
 
-    def _calc_reward(self, action):
+    def _get_reward(self, action):
+        state = Go1State(data=self.data)
         # Positive Rewards
-        linear_vel_tracking_reward = self.reward_calculator.linear_velocity(desired=self._desired_velocity[:2], current=self.data.qvel[:2])
-        angular_vel_tracking_reward = self.reward_calculator.angular_velocity(desired=self._desired_velocity[2], current=self.data.qvel[5])
+        linear_vel_tracking_reward = self.reward_calculator.linear_velocity(desired=self._desired_velocity[:2], current=state.base_lin_vel[:2])
+        angular_vel_tracking_reward = self.reward_calculator.angular_velocity(desired=self._desired_velocity[2], current=state.base_ang_vel[2])
         healthy_reward = self.reward_calculator.healthy(is_healthy=self.is_healthy)
         feet_air_time_reward = self.reward_calculator.feet_air_time(feet_contact_forces=self.feet_contact_forces, dt=self.dt, desired=self._desired_velocity[:2])
 
-        rewards = (
-                linear_vel_tracking_reward
-                + angular_vel_tracking_reward
-                + healthy_reward
-                + feet_air_time_reward
-        )
+        rewards = sum([
+            linear_vel_tracking_reward,
+            angular_vel_tracking_reward,
+            healthy_reward,
+            feet_air_time_reward,
+        ])
 
         # Negative Costs
-        ctrl_cost = self.reward_calculator.torque_cost(torques=self.data.qfrc_actuator[-12:])
+        ctrl_cost = self.reward_calculator.torque_cost(torques=state.joint_trq)
         action_rate_cost = self.reward_calculator.action_rate(last_actions=self._last_action, actions=action)
-        vertical_vel_cost = self.reward_calculator.vertical_vel(vertical_vel=self.data.qvel[2])
-        xy_angular_vel_cost = self.reward_calculator.xy_angular_velocity(ang_vel=self.data.qvel[3:5])
-        joint_limit_cost = self.reward_calculator.joint_limit(soft_joint_range=self._soft_joint_range, jpos=self.data.qpos)
-        joint_acc_cost = self.reward_calculator.joint_acc_limit(qacc=self.data.qacc[6:])
+        vertical_vel_cost = self.reward_calculator.vertical_vel(vertical_vel=state.base_lin_vel[2])
+        xy_angular_vel_cost = self.reward_calculator.xy_angular_velocity(ang_vel=state.base_ang_vel[:2])
+        joint_limit_cost = self.reward_calculator.joint_limit(soft_joint_range=self._soft_joint_range, jpos=state.joint_pos)
+        joint_acc_cost = self.reward_calculator.joint_acc_limit(qacc=state.joint_acc)
 
-        costs = (
-                ctrl_cost
-                + action_rate_cost
-                + vertical_vel_cost
-                + xy_angular_vel_cost
-                + joint_limit_cost
-                + joint_acc_cost
-        )
+        costs = sum([
+            ctrl_cost,
+            action_rate_cost,
+            vertical_vel_cost,
+            xy_angular_vel_cost,
+            joint_limit_cost,
+            joint_acc_cost,
+        ])
 
         reward = max(0.0, rewards - costs)
 
@@ -303,38 +269,8 @@ class Go1MujocoEnv(MujocoEnv):
 
         return observation
 
-    def _get_reset_info(self):
-        return {
-            "x_position": self.data.qpos[0],
-            "y_position": self.data.qpos[1],
-            "distance_from_origin": np.linalg.norm(self.data.qpos[0:2], ord=2),
-        }
-
     def _sample_desired_vel(self):
         desired_vel = np.random.default_rng().uniform(
             low=self._desired_velocity_min, high=self._desired_velocity_max
         )
         return desired_vel
-
-    @staticmethod
-    def euler_from_quaternion(w, x, y, z):
-        """
-        Convert a quaternion into euler angles (roll, pitch, yaw)
-        roll is rotation around x in radians (counterclockwise)
-        pitch is rotation around y in radians (counterclockwise)
-        yaw is rotation around z in radians (counterclockwise)
-        """
-        t0 = +2.0 * (w * x + y * z)
-        t1 = +1.0 - 2.0 * (x * x + y * y)
-        roll_x = np.arctan2(t0, t1)
-
-        t2 = +2.0 * (w * y - z * x)
-        t2 = +1.0 if t2 > +1.0 else t2
-        t2 = -1.0 if t2 < -1.0 else t2
-        pitch_y = np.arcsin(t2)
-
-        t3 = +2.0 * (w * z + x * y)
-        t4 = +1.0 - 2.0 * (y * y + z * z)
-        yaw_z = np.arctan2(t3, t4)
-
-        return roll_x, pitch_y, yaw_z  # in radians

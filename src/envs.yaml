@@ -20,6 +20,7 @@ curriculum:
   base: 0.3
 # Command
 command:
+  tracking_velocity_sigma: 0.25
   des_vel:
     min: [0.5, 0.0, 0.0]
     max: [0.5, 0.0, 0.0]
@@ -34,3 +35,5 @@ termination:
   z_range: [0.22, 0.65] # In m
   pitch_range: [-10, 10] # In degree
   roll_range: [-10, 10] # In degree
+render:
+  render_fps: 60
