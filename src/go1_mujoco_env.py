@@ -35,12 +35,15 @@ class Go1MujocoEnv(MujocoEnv):
         ],
     }
 
-    def __init__(self, prj_path, **kwargs):
+    def __init__(self, prj_path, given_command=None, **kwargs):
         model_path = Path(f"{prj_path}/unitree_go1/scene_position.xml")
         cfg_path = Path(f"{prj_path}/src/envs.yaml")
 
         with cfg_path.open("r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
+
+        # Store fixed command if provided (for testing)
+        self._given_command = given_command
 
         MujocoEnv.__init__(
             self,
@@ -234,6 +237,7 @@ class Go1MujocoEnv(MujocoEnv):
         joint_limit_cost = self.reward_calculator.joint_limit(soft_joint_range=self._soft_joint_range, jpos=state.joint_pos)
         joint_acc_cost = self.reward_calculator.joint_acc_limit(qacc=state.joint_acc)
         action_norm_cost = self.reward_calculator.action_norm(action=action)
+        joint_pos_deviation_cost = self.reward_calculator.joint_pos_deviation(jpos=state.joint_pos, nominal_jpos=self._default_joint_position)
 
         costs = sum([
             ctrl_cost,
@@ -243,6 +247,7 @@ class Go1MujocoEnv(MujocoEnv):
             joint_limit_cost,
             joint_acc_cost,
             action_norm_cost,
+            joint_pos_deviation_cost,
         ])
 
         reward = rewards - costs
@@ -262,7 +267,8 @@ class Go1MujocoEnv(MujocoEnv):
             "cost/xy_angular_vel": xy_angular_vel_cost,
             "cost/joint_lim": joint_limit_cost,
             "cost/joint_acc": joint_acc_cost,
-            "cost/action_norm": action_norm_cost
+            "cost/action_norm": action_norm_cost,
+            "cost/joint_pos_deviation": joint_pos_deviation_cost
         }
 
         return reward, reward_info
@@ -328,6 +334,10 @@ class Go1MujocoEnv(MujocoEnv):
         return observation
 
     def _sample_desired_vel(self):
+        # If given_command is provided, use it instead of random sampling
+        if self._given_command is not None:
+            return np.array(self._given_command)
+
         desired_vel = np.random.default_rng().uniform(
             low=self._desired_velocity_min, high=self._desired_velocity_max
         )
