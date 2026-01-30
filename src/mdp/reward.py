@@ -105,3 +105,135 @@ class RewardCalculator:
         """Large penalty for falling/termination"""
         return self.cost_weights["termination"] * float(is_terminated)
 
+    def gait_enforcement(self, foot_contact_forces, foot_contact_phase):
+        """
+        Enforce trot gait pattern using quadratic penalty.
+        Penalizes when actual foot contact doesn't match the desired phase.
+
+        Args:
+            foot_contact_forces: Contact forces for each foot [FR, FL, RR, RL]
+            foot_contact_phase: Desired phase for each foot [-1, 1]
+
+        Returns:
+            Cost (penalty) for gait mismatch
+        """
+        # Compute actual contact state (binary)
+        curr_contact = foot_contact_forces > 1.0  # [FR, FL, RR, RL]
+
+        # Compute foot_contact_double as in RaiSim
+        # If in contact: positive phase value, if in air: negative phase value
+        foot_contact_double = np.zeros(4)
+        for i in range(4):
+            if curr_contact[i]:
+                foot_contact_double[i] = 1.0 * foot_contact_phase[i]
+            else:
+                foot_contact_double[i] = -1.0 * foot_contact_phase[i]
+
+        # ===== Option 1: Quadratic penalty (currently used) =====
+        penalty = np.sum((foot_contact_double - 1.0) ** 2)
+        return self.cost_weights["gait_enforcement"] * penalty
+
+        # ===== Option 2: Relaxed log barrier (original RaiSim) =====
+        # # Apply relaxed log barrier to keep values in range [-0.6, 2.0]
+        # limit_lower = -0.6
+        # limit_upper = 2.0
+        # delta = 0.1
+        #
+        # barrier_reward = 0.0
+        # for i in range(4):
+        #     barrier_reward += self._relaxed_log_barrier(
+        #         delta, limit_lower, limit_upper, foot_contact_double[i]
+        #     )
+        #
+        # # Clip to prevent extreme gradients (as in RaiSim line 442-448)
+        # barrier_reward = max(barrier_reward, -300.0)
+        #
+        # # Return as cost (negative reward)
+        # return self.cost_weights["gait_enforcement"] * (-barrier_reward)
+
+    def foot_clearance(self, foot_positions, foot_contact_phase):
+        """
+        Enforce foot clearance during swing phase using quadratic penalty.
+        Ensures feet lift high enough during swing phase.
+
+        Args:
+            foot_positions: Z-positions of feet relative to ground [FR, FL, RR, RL] (4,)
+            foot_contact_phase: Desired phase for each foot [-1, 1]
+
+        Returns:
+            Cost (penalty) for insufficient clearance
+        """
+        desired_foot_clearance = 0.1 
+
+        # ===== Option 1: Quadratic penalty (currently used) =====
+        # Penalize deviation from desired clearance during swing phase
+        penalty = 0.0
+        for i in range(4):
+            # Only enforce clearance during swing phase (phase < -0.6)
+            if foot_contact_phase[i] < -0.6:
+                # Penalize when foot is below desired clearance
+                clearance_error = foot_positions[i] - desired_foot_clearance
+                if clearance_error < 0:  # Below desired height
+                    penalty += clearance_error ** 2
+
+        return self.cost_weights["foot_clearance"] * penalty
+
+        # ===== Option 2: Relaxed log barrier (original RaiSim) =====
+        # limit_lower = -0.08
+        # limit_upper = 1.0
+        # delta = 0.02
+        #
+        # foot_clearance_vals = np.zeros(4)
+        # for i in range(4):
+        #     # Only enforce clearance during swing phase (phase < -0.6)
+        #     if foot_contact_phase[i] < -0.6:
+        #         foot_clearance_vals[i] = foot_positions[i] - desired_foot_clearance
+        #     else:
+        #         foot_clearance_vals[i] = 0.0  # Max reward (not enforcing)
+        #
+        # barrier_reward = 0.0
+        # for i in range(4):
+        #     barrier_reward += self._relaxed_log_barrier(
+        #         delta, limit_lower, limit_upper, foot_clearance_vals[i]
+        #     )
+        #
+        # # Clip to prevent extreme gradients (as in RaiSim)
+        # barrier_reward = max(barrier_reward, -300.0)
+        #
+        # # Return as cost (negative reward)
+        # return self.cost_weights["foot_clearance"] * (-barrier_reward)
+
+    @staticmethod
+    def _relaxed_log_barrier(delta, alpha_lower, alpha_upper, x):
+        """
+        Relaxed log barrier function as in RaiSim.
+        Returns positive reward when x is within bounds, negative outside.
+
+        Args:
+            delta: Relaxation parameter
+            alpha_lower: Lower bound
+            alpha_upper: Upper bound
+            x: Value to check
+
+        Returns:
+            Barrier reward (positive inside bounds)
+        """
+        reward = 0.0
+
+        # Lower bound
+        x_temp = x - alpha_lower
+        if x_temp < delta:
+            reward += 0.5 * ((x_temp - 2*delta) / delta)**2 - 1 - np.log(delta)
+        else:
+            reward += -np.log(x_temp)
+
+        # Upper bound
+        x_temp = -(x - alpha_upper)
+        if x_temp < delta:
+            reward += 0.5 * ((x_temp - 2*delta) / delta)**2 - 1 - np.log(delta)
+        else:
+            reward += -np.log(x_temp)
+
+        # Return positive reward (multiply by -1 to flip sign)
+        return -reward
+

@@ -105,6 +105,14 @@ class Go1MujocoEnv(MujocoEnv):
         # Action: 12 torque values
         self._last_action = np.zeros(12)
 
+        # Gait phase tracking
+        self._phase = 0.0
+        self._gait_hz = 1  # Gait frequency (Hz)
+        self._phase_sin = np.zeros(2)  # [sin(phase), cos(phase)]
+
+        # Foot contact phase for gait enforcement
+        self._foot_contact_phase = np.zeros(4)  # [RR, RL, FR, FL]
+
         self._clip_obs_threshold = 100.0
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=self._get_obs().shape, dtype=np.float32
@@ -155,6 +163,9 @@ class Go1MujocoEnv(MujocoEnv):
         # print("absolute_action   " ,absolute_action )
 
         self.do_simulation(absolute_action, self.frame_skip)
+
+        # Update gait phase
+        self._update_gait_phase()
 
         observation = self._get_obs()
         reward, reward_info = self._get_reward(action)
@@ -209,6 +220,16 @@ class Go1MujocoEnv(MujocoEnv):
         return np.linalg.norm(feet_contact_forces, axis=1)
 
     @property
+    def feet_positions_z(self):
+        """Get Z positions of feet relative to ground (height above ground)."""
+        feet_z = np.zeros(4)
+        feet_site_names = ["FR", "FL", "RR", "RL"]
+        for i, site_name in enumerate(feet_site_names):
+            site_id = self._feet_site_name_to_id[site_name]
+            feet_z[i] = self.data.site_xpos[site_id][2]
+        return feet_z
+
+    @property
     def curriculum_factor(self):
         return self._curriculum_base ** 0.997
 
@@ -239,6 +260,16 @@ class Go1MujocoEnv(MujocoEnv):
         action_norm_cost = self.reward_calculator.action_norm(action=action)
         joint_pos_deviation_cost = self.reward_calculator.joint_pos_deviation(jpos=state.joint_pos, nominal_jpos=self._default_joint_position)
 
+        # Gait-related costs
+        gait_enforcement_cost = self.reward_calculator.gait_enforcement(
+            foot_contact_forces=self.feet_contact_forces,
+            foot_contact_phase=self._foot_contact_phase
+        )
+        foot_clearance_cost = self.reward_calculator.foot_clearance(
+            foot_positions=self.feet_positions_z,
+            foot_contact_phase=self._foot_contact_phase
+        )
+
         costs = sum([
             ctrl_cost,
             action_rate_cost,
@@ -248,6 +279,8 @@ class Go1MujocoEnv(MujocoEnv):
             joint_acc_cost,
             action_norm_cost,
             joint_pos_deviation_cost,
+            gait_enforcement_cost,
+            foot_clearance_cost,
         ])
 
         reward = rewards - costs
@@ -268,7 +301,9 @@ class Go1MujocoEnv(MujocoEnv):
             "cost/joint_lim": joint_limit_cost,
             "cost/joint_acc": joint_acc_cost,
             "cost/action_norm": action_norm_cost,
-            "cost/joint_pos_deviation": joint_pos_deviation_cost
+            "cost/joint_pos_deviation": joint_pos_deviation_cost,
+            "cost/gait_enforcement": gait_enforcement_cost,
+            "cost/foot_clearance": foot_clearance_cost,
         }
 
         return reward, reward_info
@@ -302,6 +337,7 @@ class Go1MujocoEnv(MujocoEnv):
                 dofs_position * self._obs_scale["dofs_position"],
                 dofs_velocity * self._obs_scale["dofs_velocity"],
                 last_action,
+                self._phase_sin,  # Add gait phase (sin, cos) encoding (2D)
             )
         ).clip(-self._clip_obs_threshold, self._clip_obs_threshold)
 
@@ -326,12 +362,40 @@ class Go1MujocoEnv(MujocoEnv):
         self._last_action = np.zeros(12)
         self._last_render_time = -1.0
 
+        # Reset gait phase (randomize start phase like RaiSim)
+        if self.np_random.uniform() <= 0.5:
+            self._phase = 0.0
+        else:
+            self._phase = self._gait_hz / 2.0
+        self._foot_contact_phase = np.zeros(4)
+
         # Reset buffer at reward calculator
         self.reward_calculator.reset()
 
         observation = self._get_obs()
 
         return observation
+
+    def _update_gait_phase(self):
+        """Update gait phase and compute foot contact phases for trot gait."""
+        # Update phase
+        self._phase += self.dt
+
+        # Compute phase sin/cos for observation
+        phase_val = self._phase / self._gait_hz * 2 * np.pi
+        self._phase_sin[0] = np.sin(phase_val)
+        self._phase_sin[1] = np.cos(phase_val)
+
+        # Compute foot contact phase for each foot (trot gait pattern)
+        # Order: [FR, FL, RR, RL] based on _cfrc_ext_feet_indices = [4, 7, 10, 13]
+        # RaiSim order was: [RR, RL, FR, FL]
+        # We need to map: FR(0), FL(1), RR(2), RL(3)
+
+        base_phase = np.sin(phase_val)
+        self._foot_contact_phase[2] = base_phase      # RR
+        self._foot_contact_phase[3] = -base_phase     # RL (opposite)
+        self._foot_contact_phase[0] = -base_phase     # FR (opposite)
+        self._foot_contact_phase[1] = base_phase      # FL (same as RR)
 
     def _sample_desired_vel(self):
         # If given_command is provided, use it instead of random sampling
