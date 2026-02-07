@@ -337,7 +337,7 @@ class Go1MujocoEnv(MujocoEnv):
                 dofs_position * self._obs_scale["dofs_position"],
                 dofs_velocity * self._obs_scale["dofs_velocity"],
                 last_action,
-                self._phase_sin,  # Add gait phase (sin, cos) encoding (2D)
+                # self._phase_sin,  # Add gait phase (sin, cos) encoding (2D)
             )
         ).clip(-self._clip_obs_threshold, self._clip_obs_threshold)
 
