@@ -8,7 +8,7 @@ reward:
 # Negative Rewards (Penalty)
 cost:
   torque: 0.001
-  vertical_vel: 0.0
+  vertical_vel: 1.0
   xy_angular_vel: 0.2
   action_rate: 0.01
   joint_limit: 10.0
