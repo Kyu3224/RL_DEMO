@@ -45,6 +45,6 @@ termination:
   z_range: [0.20, 0.55] # In m
   pitch_range: [-15, 15] # In degree
   roll_range: [-15, 15] # In degree
-  allow_calf_contact: true
+  allow_calf_contact: false
 render:
   render_fps: 60

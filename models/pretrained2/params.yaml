@@ -1,0 +1,21 @@
+seed: 42
+n_envs: 12
+total_timestep: 2000000
+eval_freq: 10000
+policy:
+  use_pretrained: false
+  learning_rate: 0.00008
+  n_steps: 400
+  batch_size: 64
+  n_epochs: 10
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  normalize_advantage: true
+  ent_coef: 0.0
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+log:
+  interval: 50
+test:
+  max_time_step_s: 4.0
